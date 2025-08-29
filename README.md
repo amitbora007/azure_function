@@ -1,6 +1,6 @@
-# Payliance Azure Function
+#  Azure Function
 
-An Azure Function that processes Payliance debit transactions. This function takes a transaction ID and transaction data as input and calls the Payliance E-check Debit API.
+An Azure Function that processes  debit transactions. This function takes a transaction ID and transaction data as input and calls the  E-check Debit API.
 
 ## Features
 
@@ -45,10 +45,10 @@ An Azure Function that processes Payliance debit transactions. This function tak
    cp .env.template .env
    ```
 
-   Edit `.env` with your actual Payliance API credentials:
+   Edit `.env` with your actual  API credentials:
    ```
-   PAYLIANCE_BASE_URL=https://your-actual-payliance-url.com
-   PAYLIANCE_AUTH_TOKEN=your-actual-auth-token
+   _BASE_URL=https://your-actual--url.com
+   _AUTH_TOKEN=your-actual-auth-token
    ```
 
 3. **Update local.settings.json**:
@@ -59,8 +59,8 @@ An Azure Function that processes Payliance debit transactions. This function tak
      "Values": {
        "AzureWebJobsStorage": "UseDevelopmentStorage=true",
        "FUNCTIONS_WORKER_RUNTIME": "python",
-       "PAYLIANCE_BASE_URL": "https://your-payliance-base-url.com",
-       "PAYLIANCE_AUTH_TOKEN": "your-payliance-auth-token-here"
+       "_BASE_URL": "https://your--base-url.com",
+       "_AUTH_TOKEN": "your--auth-token-here"
      }
    }
    ```
@@ -92,7 +92,7 @@ An Azure Function that processes Payliance debit transactions. This function tak
 {
   "success": true,
   "status_code": 200,
-  "response_data": "Payliance API response data",
+  "response_data": " API response data",
   "transaction_id": "TXN123456",
   "request_id": "uuid-here",
   "processing_time_ms": 1250.5
@@ -135,8 +135,8 @@ An Azure Function that processes Payliance debit transactions. This function tak
    - Go to your Function App in Azure Portal
    - Navigate to Configuration > Application settings
    - Add the following settings:
-     - `PAYLIANCE_BASE_URL`
-     - `PAYLIANCE_AUTH_TOKEN`
+     - `_BASE_URL`
+     - `_AUTH_TOKEN`
 
 ## Configuration
 
@@ -144,8 +144,8 @@ An Azure Function that processes Payliance debit transactions. This function tak
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `PAYLIANCE_BASE_URL` | Base URL for Payliance API | Yes |
-| `PAYLIANCE_AUTH_TOKEN` | Bearer token for Payliance API authentication | Yes |
+| `_BASE_URL` | Base URL for  API | Yes |
+| `_AUTH_TOKEN` | Bearer token for  API authentication | Yes |
 | `AzureWebJobsStorage` | Azure Storage connection string | Yes |
 | `FUNCTIONS_WORKER_RUNTIME` | Function runtime (should be "python") | Yes |
 
@@ -213,8 +213,8 @@ curl -X POST "http://localhost:7071/api/debit" \
 ### Common Issues
 
 1. **Import errors**: Ensure all dependencies are in `requirements.txt`
-2. **Authentication errors**: Verify `PAYLIANCE_AUTH_TOKEN` is correct
-3. **Connection errors**: Check `PAYLIANCE_BASE_URL` and network connectivity
+2. **Authentication errors**: Verify `_AUTH_TOKEN` is correct
+3. **Connection errors**: Check `_BASE_URL` and network connectivity
 4. **Timeout errors**: Adjust timeout values if needed
 
 ### Debug Logging
