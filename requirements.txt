@@ -1,0 +1,5 @@
+azure-functions
+httpx
+python-dotenv
+aioodbc
+pyodbc
