@@ -35,7 +35,9 @@ An Azure Function that processes  debit transactions. This function takes a tran
 
 1. **Install dependencies**:
    ```bash
-   pip3 install -r requirements.txt
+   chmod +x setup.sh
+   ./setup.sh
+
    source venv/bin/activate
    ```
 
@@ -51,21 +53,7 @@ An Azure Function that processes  debit transactions. This function takes a tran
    _AUTH_TOKEN=your-actual-auth-token
    ```
 
-3. **Update local.settings.json**:
-   Update the `local.settings.json` file with your configuration:
-   ```json
-   {
-     "IsEncrypted": false,
-     "Values": {
-       "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-       "FUNCTIONS_WORKER_RUNTIME": "python",
-       "_BASE_URL": "https://your--base-url.com",
-       "_AUTH_TOKEN": "your--auth-token-here"
-     }
-   }
-   ```
-
-4. **Run locally**:
+3. **Run locally**:
    ```bash
    func start
    ```
@@ -113,41 +101,20 @@ An Azure Function that processes  debit transactions. This function takes a tran
 
 ## Deployment
 
-### Deploy to Azure
+### Deploy to Azure from system
 
-1. **Create Azure Function App**:
-   ```bash
-   az functionapp create --resource-group myResourceGroup \
-     --consumption-plan-location westus2 \
-     --runtime python \
-     --runtime-version 3.9 \
-     --functions-version 4 \
-     --name myFunctionApp \
-     --storage-account mystorageaccount
-   ```
+1. **Install Azure CLI**:
+  - curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+  - chmod +x deployment.sh
+  - ./deployment.sh
+  - Create a Storage Account from the Portal
+  - ./deployment.sh
 
-2. **Deploy the function**:
-   ```bash
-   func azure functionapp publish myFunctionApp
-   ```
+2. Add environment variables:
+  Portal > Function App > Settings > Environment Variables
 
-3. **Configure environment variables** in Azure Portal:
-   - Go to your Function App in Azure Portal
-   - Navigate to Configuration > Application settings
-   - Add the following settings:
-     - `_BASE_URL`
-     - `_AUTH_TOKEN`
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `_BASE_URL` | Base URL for  API | Yes |
-| `_AUTH_TOKEN` | Bearer token for  API authentication | Yes |
-| `AzureWebJobsStorage` | Azure Storage connection string | Yes |
-| `FUNCTIONS_WORKER_RUNTIME` | Function runtime (should be "python") | Yes |
+3. Validate variables using this command:
+   az functionapp config appsettings list     --name payliance-function-app-1756466897     --resource-group payliance-rg     --output table
 
 ### Default Values
 
@@ -200,13 +167,6 @@ curl -X POST "http://localhost:7071/api/debit" \
 - Enable authentication/authorization on the Function App
 - Implement IP restrictions if needed
 - Monitor and alert on function executions
-
-## Performance
-
-- Function uses async HTTP client for optimal performance
-- Includes connection pooling and timeout configuration
-- Tracks processing time for monitoring
-- Designed for horizontal scaling in Azure
 
 ## Troubleshooting
 

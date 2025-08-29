@@ -33,11 +33,11 @@ source venv/bin/activate
 
 # Upgrade pip
 echo "⬆️ Upgrading pip..."
-pip install --upgrade pip
+pip3 install --upgrade pip
 
 # Install requirements
 echo "📥 Installing Python packages..."
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
 # Check if Azure Functions Core Tools is installed
 echo "🔍 Checking Azure Functions Core Tools..."

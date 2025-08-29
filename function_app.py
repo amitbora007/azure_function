@@ -48,7 +48,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
             logger.info(f"[{request_id}] Initializing database connection...")
             db_initialized = await db.initialize_pool(min_size=1, max_size=3)
             if not db_initialized:
-                logger.warning(f"[{request_id}] Database initialization failed, will use hardcoded data")
+                logger.warning(f"[{request_id}] Database initialization failed")
 
         # Get request body
         req_body = req.get_json()
