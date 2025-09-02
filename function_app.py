@@ -222,7 +222,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                 validation_message = response_data.get('message')
 
                 if validation_code != 1:
-                    logger.warning(f"[{request_id}] ValidationCode ({validation_code}) indicates {validation_message} ")
+                    logger.warning(f"[{request_id}] Received ValidationCode ({validation_code}) with message {validation_message} ")
                 elif authorization_id and db.connection_pool:
                     # Update the payliance auth code in database
                     update_success = await db.update_payliance_authcode(transaction_id, authorization_id)
@@ -248,7 +248,6 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                     "transaction_id": transaction_id,
                     "request_id": request_id,
                     "processing_time_ms": processing_time,
-                    "database_used": transaction_data is not None
                 }),
                 status_code=200,
                 mimetype="application/json"
