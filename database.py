@@ -108,7 +108,7 @@ class MSSQLDatabase:
 
         query = """
         SELECT
-            bt.transaction_id,
+            te.transaction_id,
             right(bt.transaction_id, 6) as serial_number,
             bt.stamp,
             bt.total_amount,
@@ -131,10 +131,12 @@ class MSSQLDatabase:
             m.city as merchant_city,
             m.state as merchant_state,
             m.ach_trans_type,
-            m.ach_statement_id
+            m.ach_statement_id,
+            te.settled_log_id
         FROM bim_transaction bt
-        LEFT JOIN bim_consumer c ON bt.consumer_id = c.consumer_id
-        LEFT JOIN bim_merchant m ON bt.merchant_id = m.merchant_id
+        INNER JOIN bim_consumer c ON bt.consumer_id = c.consumer_id
+        INNER JOIN bim_merchant m ON bt.merchant_id = m.merchant_id
+        LEFT JOIN bim_transaction_events te ON bt.transaction_id = te.transaction_id
         WHERE bt.transaction_id = ?
         """
 
@@ -159,32 +161,45 @@ class MSSQLDatabase:
             logger.error(f"Database query failed for transaction {transaction_id}: {str(e)}")
             return None
 
-    async def update_payliance_authcode(self, transaction_id: str, authorization_id: str) -> bool:
-        """Update the payliance authorization code in the database"""
+
+    async def insert_transaction_event(self,
+        transaction_id: str,
+        settled_stamp: str,
+        settled_log_id: str,
+        created_on: str,
+        created_by: int,
+        payliance_auth_id: str
+    ) -> bool:
+        """Insert a record into bim_transaction_events table"""
         if not self.connection_pool:
             logger.warning("Database connection pool not available")
             return False
 
         query = """
-        UPDATE bim_transaction_events
-        SET payliance_auth_id = ?
-        WHERE transaction_id = ?
+        INSERT INTO bim_transaction_events
+        (transaction_id, settled_stamp, settled_log_id, created_on, created_by, payliance_auth_id)
+        VALUES (?, ?, ?, ?, ?, ?)
         """
 
         try:
             async with self.connection_pool.acquire() as conn:
                 async with conn.cursor() as cursor:
-                    await cursor.execute(query, (authorization_id, transaction_id))
-
+                    await cursor.execute(query, (
+                        transaction_id,
+                        settled_stamp,
+                        settled_log_id,
+                        created_on,
+                        created_by,
+                        payliance_auth_id
+                    ))
                     if cursor.rowcount > 0:
-                        logger.info(f"Updated authorization ID for transaction {transaction_id}")
+                        logger.info(f"Inserted transaction event for transaction_id {transaction_id}")
                         return True
                     else:
-                        logger.warning(f"No rows updated for transaction {transaction_id}")
+                        logger.warning(f"No rows inserted for transaction_id {transaction_id}")
                         return False
-
         except Exception as e:
-            logger.error(f"Failed to update authorization code for transaction {transaction_id}: {str(e)}")
+            logger.error(f"Failed to insert transaction event for transaction_id {transaction_id}: {str(e)}")
             return False
 
 # Global database instance

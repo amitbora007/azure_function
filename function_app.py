@@ -120,7 +120,18 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
             try:
                 logger.info(f"[{request_id}] Fetching transaction details from database for ID: {transaction_id}")
                 transaction_data = await db.get_transaction_by_id(transaction_id)
-                if transaction_data:
+                if transaction_data.get('transaction_id'):
+                    logger.warning(f"[{request_id}] Transaction already sent to Payliance")
+                    return func.HttpResponse(
+                        json.dumps({
+                            "success": False,
+                            "error": "Transaction already sent to Payliance",
+                            "request_id": request_id
+                        }),
+                        status_code=200,
+                        mimetype="application/json"
+                    )
+                elif not transaction_data.get('transaction_id'):
                     logger.info(f"[{request_id}] Database lookup successful - found transaction data")
                 else:
                     logger.warning(f"[{request_id}] Transaction not found in database")
@@ -129,8 +140,8 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
         else:
             logger.warning(f"[{request_id}] Database connection not available")
 
-        # Use database data if available, otherwise use fallback data
-        if transaction_data:
+        # Use database data if available
+        if not transaction_data.get('transaction_id'):
             # Parse datetime from database
             stamp = transaction_data.get('stamp')
             if isinstance(stamp, str):
@@ -225,7 +236,15 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                     logger.warning(f"[{request_id}] Received ValidationCode ({validation_code}) with message {validation_message} ")
                 elif authorization_id and db.connection_pool:
                     # Update the payliance auth code in database
-                    update_success = await db.update_payliance_authcode(transaction_id, authorization_id)
+                    update_success = await db.insert_transaction_event(
+                        transaction_id=transaction_id,
+                        settled_stamp= datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        settled_log_id=datetime.now().strftime('%y%m%d%H'),
+                        created_on=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        created_by=9998,
+                        payliance_auth_id=authorization_id
+                    )
+
                     if update_success:
                         logger.info(f"[{request_id}] Database updated with AuthorizationId: {authorization_id}")
                     else:
