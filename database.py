@@ -29,8 +29,8 @@ class MSSQLDatabase:
         database = os.environ.get('MSSQL_DATABASE')
         username = os.environ.get('MSSQL_USERNAME')
         password = os.environ.get('MSSQL_PASSWORD')
-        port = os.environ.get('MSSQL_PORT', '1433')
-        driver = os.environ.get('MSSQL_DRIVER', 'ODBC Driver 18 for SQL Server')
+        port = os.environ.get('MSSQL_PORT')
+        driver = os.environ.get('MSSQL_DRIVER')
 
         if not all([server, database, username, password]):
             logger.warning("Database configuration incomplete - some environment variables are missing")
