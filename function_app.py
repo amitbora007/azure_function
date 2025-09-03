@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 import uuid
 from database import db
 from dotenv import load_dotenv
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +19,9 @@ app = func.FunctionApp()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Service Bus connection string should be configured in Azure settings
+SERVICE_BUS_CONNECTION = "ServiceBusConnection"
+
 @app.function_name(name="health")
 @app.route(route="health", auth_level=func.AuthLevel.FUNCTION, methods=["GET"])
 async def health_check(req: func.HttpRequest) -> func.HttpResponse:
@@ -26,6 +30,140 @@ async def health_check(req: func.HttpRequest) -> func.HttpResponse:
         status_code=200,
         mimetype="application/json"
     )
+
+@app.function_name(name="ServiceBusDebitProcessor")
+@app.service_bus_queue_trigger(
+    arg_name="msg",
+    queue_name="transactions",
+    connection=SERVICE_BUS_CONNECTION
+)
+async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
+    """
+    Azure Function triggered by Service Bus messages to process debit transactions.
+    Each message from the Service Bus will trigger a call to the /debit endpoint.
+    """
+    message_id = str(uuid.uuid4())
+    start_time = datetime.now()
+
+    try:
+        # Get message content
+        message_body = msg.get_body().decode('utf-8')
+        logger.info(f"[{message_id}] Received Service Bus message: {message_body}")
+
+        # Parse the message body as JSON
+        try:
+            message_data = json.loads(message_body)
+        except json.JSONDecodeError as e:
+            logger.error(f"[{message_id}] Failed to parse message as JSON: {str(e)}")
+            logger.error(f"[{message_id}] Raw message: {message_body}")
+            # Dead letter the message or handle parsing error
+            raise ValueError(f"Invalid JSON in Service Bus message: {str(e)}")
+
+        # Extract transaction_id from the message
+        transaction_id = message_data.get('transaction_id')
+        if not transaction_id:
+            logger.error(f"[{message_id}] No transaction_id found in message")
+            logger.error(f"[{message_id}] Message data: {message_data}")
+            raise ValueError("transaction_id is required in Service Bus message")
+
+        logger.info(f"[{message_id}] Processing Service Bus message for transaction: {transaction_id}")
+
+        # Call the debit endpoint
+        success = await call_debit_endpoint(transaction_id, message_id)
+
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+
+        if success:
+            logger.info(f"✅ [{message_id}] Service Bus message processed successfully for transaction {transaction_id} in {processing_time:.2f}ms")
+        else:
+            logger.error(f"❌ [{message_id}] Failed to process Service Bus message for transaction {transaction_id} in {processing_time:.2f}ms")
+            # Re-raise to trigger retry mechanism
+            raise Exception(f"Failed to process debit transaction {transaction_id}")
+
+    except Exception as e:
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        logger.error(f"❌ [{message_id}] Error processing Service Bus message: {str(e)}")
+        logger.error(f"[{message_id}] Processing time: {processing_time:.2f}ms")
+
+        # Log additional message properties for debugging
+        try:
+            logger.error(f"[{message_id}] Message ID: {msg.message_id}")
+            logger.error(f"[{message_id}] Delivery count: {msg.delivery_count}")
+            logger.error(f"[{message_id}] Enqueued time: {msg.enqueued_time_utc}")
+        except Exception as prop_error:
+            logger.error(f"[{message_id}] Error logging message properties: {str(prop_error)}")
+
+        # Re-raise the exception to trigger Service Bus retry mechanism
+        raise
+
+async def call_debit_endpoint(transaction_id: str, correlation_id: str = None) -> bool:
+    """
+    Helper function to call the debit endpoint internally.
+
+    Args:
+        transaction_id: The transaction ID to process
+        correlation_id: Optional correlation ID for logging
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not correlation_id:
+        correlation_id = str(uuid.uuid4())
+
+    try:
+        # Get environment variables for internal call
+        function_app_url = os.environ.get('FUNCTION_APP_URL', 'http://localhost:7071')
+        function_key = os.environ.get('FUNCTION_KEY', '')
+
+        # Prepare the request payload
+        payload = {"transaction_id": transaction_id}
+
+        # Prepare headers
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Correlation-ID': correlation_id
+        }
+
+        # Add function key if available (for production)
+        if function_key:
+            headers['x-functions-key'] = function_key
+
+        # Construct the URL
+        debit_url = f"{function_app_url}/api/debit"
+
+        logger.info(f"[{correlation_id}] Calling debit endpoint: {debit_url}")
+
+        # Make the HTTP call with timeout and retry logic
+        timeout = httpx.Timeout(timeout=60.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            response = await client.post(debit_url, headers=headers, json=payload)
+
+        if response.status_code == 200:
+            logger.info(f"✅ [{correlation_id}] Debit endpoint call successful for transaction {transaction_id}")
+            try:
+                response_data = response.json()
+                if response_data.get('success'):
+                    return True
+                else:
+                    logger.warning(f"[{correlation_id}] Debit endpoint returned success=false: {response_data}")
+                    return False
+            except json.JSONDecodeError:
+                logger.warning(f"[{correlation_id}] Could not parse debit endpoint response as JSON")
+                return True  # Assume success if we got 200 but couldn't parse
+        else:
+            logger.error(f"❌ [{correlation_id}] Debit endpoint call failed with status {response.status_code}")
+            logger.error(f"[{correlation_id}] Response: {response.text}")
+            return False
+
+    except httpx.TimeoutException as e:
+        logger.error(f"❌ [{correlation_id}] Timeout calling debit endpoint for transaction {transaction_id}: {str(e)}")
+        return False
+    except httpx.RequestError as e:
+        logger.error(f"❌ [{correlation_id}] Request error calling debit endpoint for transaction {transaction_id}: {str(e)}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ [{correlation_id}] Unexpected error calling debit endpoint for transaction {transaction_id}: {str(e)}")
+        return False
 
 @app.function_name(name="PaylianceDebitFunction")
 @app.route(route="debit", auth_level=func.AuthLevel.FUNCTION, methods=["POST"])
@@ -174,28 +312,14 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                 "checkDate": stamp.isoformat() + "Z",
                 "customDescriptor": transaction_data.get('ach_statement_id', ''),
                 # Additional fields that may be required by Payliance API
-                "checkNumber": "",
                 "posCardTransactionTypeCode": "01",
                 "posTerminalLocationAddress": transaction_data.get('merchant_address', ''),
                 "posTerminalCity": transaction_data.get('merchant_city', ''),
                 "posTerminalState": transaction_data.get('merchant_state', ''),
                 "posReferenceInfo1": transaction_data.get('consumer_id', ''),
                 "posReferenceInfo2": "00",
-                "originalTranId": "",
                 "accountType": "Personal Checking",
-                "companyName": "",
                 "address2": transaction_data.get('address2', ''),
-                "opt1": "",
-                "opt2": "",
-                "opt3": "",
-                "opt4": "",
-                "opt5": "",
-                "opt6": "",
-                "micrData": "",
-                "webType": "",
-                "origSecCode": "",
-                "imageF": "",
-                "imageB": "",
                 "isSameDay": False,
                 "futureDate": "",
                 "microEntry": False,
