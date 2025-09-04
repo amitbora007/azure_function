@@ -116,6 +116,8 @@ An Azure Function that processes  debit transactions. This function takes a tran
 3. Validate variables using this command:
    az functionapp config appsettings list     --name payliance-function-app-1756466897     --resource-group payliance-rg     --output table
 
+4. func azure functionapp publish payliance-function-app-1756466897 --python
+
 ### Default Values
 
 The function uses the following default values:
