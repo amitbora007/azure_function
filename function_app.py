@@ -9,6 +9,19 @@ import uuid
 from database import db
 from dotenv import load_dotenv
 import asyncio
+from enum import Enum
+
+class ErrorType(Enum):
+    """Classification of errors for retry logic"""
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
+
+class DebitError(Exception):
+    """Custom exception for debit processing errors"""
+    def __init__(self, message: str, error_type: ErrorType, status_code: int = None):
+        super().__init__(message)
+        self.error_type = error_type
+        self.status_code = status_code
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,6 +34,62 @@ logger = logging.getLogger(__name__)
 
 # Service Bus connection string should be configured in Azure settings
 SERVICE_BUS_CONNECTION = "ServiceBusConnection"
+
+def classify_error(exception: Exception, status_code: int = None) -> ErrorType:
+    """
+    Classify errors into transient or permanent types for retry logic.
+
+    Transient Errors (should retry):
+    - Network timeouts
+    - Connection errors
+    - Temporary server errors (5xx)
+    - Service unavailable
+
+    Permanent Errors (should not retry):
+    - Authentication errors (401, 403)
+    - Bad request/data validation errors (400)
+    - Resource not found (404)
+    - Method not allowed (405)
+    - Conflict (409)
+    - Unprocessable entity (422)
+    """
+    # Check for timeout exceptions - always transient
+    if isinstance(exception, (httpx.TimeoutException, asyncio.TimeoutError)):
+        return ErrorType.TRANSIENT
+
+    # Check for connection/network errors - always transient
+    if isinstance(exception, (httpx.ConnectError, httpx.NetworkError, httpx.ConnectTimeout)):
+        return ErrorType.TRANSIENT
+
+    # Check HTTP status codes
+    if status_code:
+        # Server errors (5xx) - transient
+        if 500 <= status_code < 600:
+            return ErrorType.TRANSIENT
+
+        # Too Many Requests (429) - transient
+        if status_code == 429:
+            return ErrorType.TRANSIENT
+
+        # Client errors that indicate permanent issues
+        permanent_status_codes = {400, 401, 403, 404, 405, 409, 422}
+        if status_code in permanent_status_codes:
+            return ErrorType.PERMANENT
+
+    # Check for specific error messages that indicate permanent issues
+    error_message = str(exception).lower()
+    permanent_keywords = [
+        'unauthorized', 'forbidden', 'authentication', 'invalid token',
+        'bad request', 'malformed', 'invalid data', 'validation failed',
+        'not found', 'conflict', 'duplicate', 'already exists'
+    ]
+
+    for keyword in permanent_keywords:
+        if keyword in error_message:
+            return ErrorType.PERMANENT
+
+    # Default to transient for unknown errors to allow retry
+    return ErrorType.TRANSIENT
 
 @app.function_name(name="health")
 @app.route(route="health", auth_level=func.AuthLevel.FUNCTION, methods=["GET"])
@@ -41,14 +110,19 @@ async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
     """
     Azure Function triggered by Service Bus messages to process debit transactions.
     Each message from the Service Bus will trigger a call to the /debit endpoint.
+
+    Error Handling:
+    - Transient errors: Allow Service Bus retry (raise exception)
+    - Permanent errors: Acknowledge message to prevent retry
     """
     message_id = str(uuid.uuid4())
     start_time = datetime.now()
+    delivery_count = getattr(msg, 'delivery_count', 1)
 
     try:
         # Get message content
         message_body = msg.get_body().decode('utf-8')
-        logger.info(f"[{message_id}] Received Service Bus message: {message_body}")
+        logger.info(f"[{message_id}] Received Service Bus message (delivery #{delivery_count}): {message_body}")
 
         # Parse the message body as JSON
         try:
@@ -56,56 +130,99 @@ async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
         except json.JSONDecodeError as e:
             logger.error(f"[{message_id}] Failed to parse message as JSON: {str(e)}")
             logger.error(f"[{message_id}] Raw message: {message_body}")
-            # Dead letter the message or handle parsing error
-            raise ValueError(f"Invalid JSON in Service Bus message: {str(e)}")
+            # JSON parsing error is permanent - acknowledge message to prevent retry
+            logger.error(f"[{message_id}] PERMANENT ERROR: Invalid JSON format - acknowledging message")
+            return  # Return without raising to acknowledge message
 
         # Extract transaction_id from the message
         transaction_id = message_data.get('transaction_id')
         if not transaction_id:
             logger.error(f"[{message_id}] No transaction_id found in message")
             logger.error(f"[{message_id}] Message data: {message_data}")
-            raise ValueError("transaction_id is required in Service Bus message")
+            # Missing transaction_id is permanent - acknowledge message to prevent retry
+            logger.error(f"[{message_id}] PERMANENT ERROR: Missing transaction_id - acknowledging message")
+            return  # Return without raising to acknowledge message
 
         logger.info(f"[{message_id}] Processing Service Bus message for transaction: {transaction_id}")
 
         # Call the debit endpoint
-        success = await call_debit_endpoint(transaction_id, message_id)
+        result = await call_debit_endpoint_with_error_handling(transaction_id, message_id)
 
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
 
-        if success:
+        if result['success']:
             logger.info(f"✅ [{message_id}] Service Bus message processed successfully for transaction {transaction_id} in {processing_time:.2f}ms")
         else:
+            # Check error type from the result
+            error_type = result.get('error_type', ErrorType.TRANSIENT)
+            error_message = result.get('error_message', 'Unknown error')
+
             logger.error(f"❌ [{message_id}] Failed to process Service Bus message for transaction {transaction_id} in {processing_time:.2f}ms")
-            # Re-raise to trigger retry mechanism
-            raise Exception(f"Failed to process debit transaction {transaction_id}")
+            logger.error(f"[{message_id}] Error type: {error_type.value}, Message: {error_message}")
 
-    except Exception as e:
+            if error_type == ErrorType.PERMANENT:
+                logger.error(f"[{message_id}] PERMANENT ERROR detected - acknowledging message to prevent retry")
+                return  # Return without raising to acknowledge message
+            else:
+                logger.error(f"[{message_id}] TRANSIENT ERROR detected - allowing Service Bus retry")
+                raise DebitError(f"Transient error processing debit transaction {transaction_id}: {error_message}", ErrorType.TRANSIENT)
+
+    except DebitError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.error(f"❌ [{message_id}] Error processing Service Bus message: {str(e)}")
+        logger.error(f"❌ [{message_id}] Debit error processing Service Bus message: {str(e)}")
         logger.error(f"[{message_id}] Processing time: {processing_time:.2f}ms")
+        logger.error(f"[{message_id}] Error type: {e.error_type.value}")
 
-        # Log additional message properties for debugging
+        # Log message properties for debugging
         try:
             logger.error(f"[{message_id}] Message ID: {msg.message_id}")
-            logger.error(f"[{message_id}] Delivery count: {msg.delivery_count}")
+            logger.error(f"[{message_id}] Delivery count: {delivery_count}")
             logger.error(f"[{message_id}] Enqueued time: {msg.enqueued_time_utc}")
         except Exception as prop_error:
             logger.error(f"[{message_id}] Error logging message properties: {str(prop_error)}")
 
-        # Re-raise the exception to trigger Service Bus retry mechanism
-        raise
+        # Handle based on error type
+        if e.error_type == ErrorType.PERMANENT:
+            logger.error(f"[{message_id}] PERMANENT ERROR - acknowledging message to prevent retry")
+            return  # Return without raising to acknowledge message
+        else:
+            logger.error(f"[{message_id}] TRANSIENT ERROR - allowing Service Bus retry")
+            raise  # Re-raise to trigger Service Bus retry mechanism
 
-async def call_debit_endpoint(transaction_id: str, correlation_id: str = None) -> bool:
+    except Exception as e:
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        logger.error(f"❌ [{message_id}] Unexpected error processing Service Bus message: {str(e)}")
+        logger.error(f"[{message_id}] Processing time: {processing_time:.2f}ms")
+
+        # Log message properties for debugging
+        try:
+            logger.error(f"[{message_id}] Message ID: {msg.message_id}")
+            logger.error(f"[{message_id}] Delivery count: {delivery_count}")
+            logger.error(f"[{message_id}] Enqueued time: {msg.enqueued_time_utc}")
+        except Exception as prop_error:
+            logger.error(f"[{message_id}] Error logging message properties: {str(prop_error)}")
+
+        # Classify unknown errors and handle accordingly
+        error_type = classify_error(e)
+        logger.error(f"[{message_id}] Classified as: {error_type.value}")
+
+        if error_type == ErrorType.PERMANENT:
+            logger.error(f"[{message_id}] PERMANENT ERROR - acknowledging message to prevent retry")
+            return  # Return without raising to acknowledge message
+        else:
+            logger.error(f"[{message_id}] TRANSIENT ERROR - allowing Service Bus retry")
+            raise  # Re-raise to trigger Service Bus retry mechanism
+
+async def call_debit_endpoint_with_error_handling(transaction_id: str, correlation_id: str = None) -> Dict[str, Any]:
     """
-    Helper function to call the debit endpoint internally.
+    Helper function to call the debit endpoint internally with proper error classification.
 
     Args:
         transaction_id: The transaction ID to process
         correlation_id: Optional correlation ID for logging
 
     Returns:
-        bool: True if successful, False otherwise
+        Dict containing success status, error_type, and error_message
     """
     if not correlation_id:
         correlation_id = str(uuid.uuid4())
@@ -143,27 +260,78 @@ async def call_debit_endpoint(transaction_id: str, correlation_id: str = None) -
             try:
                 response_data = response.json()
                 if response_data.get('success'):
-                    return True
+                    return {"success": True}
                 else:
-                    logger.warning(f"[{correlation_id}] Debit endpoint returned success=false: {response_data}")
-                    return False
+                    error_msg = f"Debit endpoint returned success=false: {response_data}"
+                    logger.warning(f"[{correlation_id}] {error_msg}")
+                    # Classify based on response content
+                    error_type = classify_error(Exception(error_msg), response.status_code)
+                    return {
+                        "success": False,
+                        "error_type": error_type,
+                        "error_message": error_msg
+                    }
             except json.JSONDecodeError:
                 logger.warning(f"[{correlation_id}] Could not parse debit endpoint response as JSON")
-                return True  # Assume success if we got 200 but couldn't parse
+                return {"success": True}  # Assume success if we got 200 but couldn't parse
         else:
-            logger.error(f"❌ [{correlation_id}] Debit endpoint call failed with status {response.status_code}")
-            logger.error(f"[{correlation_id}] Response: {response.text}")
-            return False
+            error_msg = f"Debit endpoint call failed with status {response.status_code}: {response.text}"
+            logger.error(f"❌ [{correlation_id}] {error_msg}")
+            error_type = classify_error(Exception(error_msg), response.status_code)
+            return {
+                "success": False,
+                "error_type": error_type,
+                "error_message": error_msg
+            }
 
-    except httpx.TimeoutException as e:
-        logger.error(f"❌ [{correlation_id}] Timeout calling debit endpoint for transaction {transaction_id}: {str(e)}")
-        return False
+    except (httpx.TimeoutException, asyncio.TimeoutError) as e:
+        error_msg = f"Timeout calling debit endpoint for transaction {transaction_id}: {str(e)}"
+        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        return {
+            "success": False,
+            "error_type": ErrorType.TRANSIENT,
+            "error_message": error_msg
+        }
+    except (httpx.ConnectError, httpx.NetworkError, httpx.ConnectTimeout) as e:
+        error_msg = f"Network error calling debit endpoint for transaction {transaction_id}: {str(e)}"
+        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        return {
+            "success": False,
+            "error_type": ErrorType.TRANSIENT,
+            "error_message": error_msg
+        }
     except httpx.RequestError as e:
-        logger.error(f"❌ [{correlation_id}] Request error calling debit endpoint for transaction {transaction_id}: {str(e)}")
-        return False
+        error_msg = f"Request error calling debit endpoint for transaction {transaction_id}: {str(e)}"
+        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        error_type = classify_error(e)
+        return {
+            "success": False,
+            "error_type": error_type,
+            "error_message": error_msg
+        }
     except Exception as e:
-        logger.error(f"❌ [{correlation_id}] Unexpected error calling debit endpoint for transaction {transaction_id}: {str(e)}")
-        return False
+        error_msg = f"Unexpected error calling debit endpoint for transaction {transaction_id}: {str(e)}"
+        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        error_type = classify_error(e)
+        return {
+            "success": False,
+            "error_type": error_type,
+            "error_message": error_msg
+        }
+
+async def call_debit_endpoint(transaction_id: str, correlation_id: str = None) -> bool:
+    """
+    Helper function to call the debit endpoint internally (backward compatibility).
+
+    Args:
+        transaction_id: The transaction ID to process
+        correlation_id: Optional correlation ID for logging
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    result = await call_debit_endpoint_with_error_handling(transaction_id, correlation_id)
+    return result['success']
 
 @app.function_name(name="PaylianceDebitFunction")
 @app.route(route="debit", auth_level=func.AuthLevel.FUNCTION, methods=["POST"])
@@ -396,27 +564,53 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json"
             )
         else:
-            logger.warning(f"⚠️ [{request_id}] API ERROR: Transaction {transaction_id} failed with status {response.status_code}")
-            return func.HttpResponse(
-                json.dumps({
-                    "success": False,
-                    "status_code": response.status_code,
-                    "error_message": response.text,
-                    "transaction_id": transaction_id,
-                    "request_id": request_id,
-                    "processing_time_ms": processing_time
-                }),
-                status_code=response.status_code,
-                mimetype="application/json"
-            )
+            # Classify error based on status code and response
+            error_type = classify_error(Exception(f"HTTP {response.status_code}"), response.status_code)
+            error_msg = f"API ERROR: Transaction {transaction_id} failed with status {response.status_code}"
 
-    except httpx.TimeoutException as e:
+            logger.warning(f"⚠️ [{request_id}] {error_msg}")
+            logger.warning(f"[{request_id}] Error classified as: {error_type.value}")
+            logger.warning(f"[{request_id}] Response: {response.text}")
+
+            # For non-200 responses, raise appropriate exception to trigger retry logic
+            if error_type == ErrorType.TRANSIENT:
+                raise DebitError(f"{error_msg}: {response.text}", ErrorType.TRANSIENT, response.status_code)
+            else:
+                raise DebitError(f"{error_msg}: {response.text}", ErrorType.PERMANENT, response.status_code)
+
+    except DebitError as e:
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        logger.error(f"❌ [{request_id}] DEBIT ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] Error type: {e.error_type.value}")
+
+        # Return appropriate status code based on error type
+        if e.error_type == ErrorType.PERMANENT:
+            status_code = e.status_code or 400
+        else:
+            status_code = e.status_code or 500
+
+        return func.HttpResponse(
+            json.dumps({
+                "success": False,
+                "error": str(e),
+                "error_type": e.error_type.value,
+                "transaction_id": transaction_id,
+                "request_id": request_id,
+                "processing_time_ms": processing_time
+            }),
+            status_code=status_code,
+            mimetype="application/json"
+        )
+
+    except (httpx.TimeoutException, asyncio.TimeoutError) as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         logger.error(f"❌ [{request_id}] TIMEOUT ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] Error classified as: {ErrorType.TRANSIENT.value}")
         return func.HttpResponse(
             json.dumps({
                 "success": False,
                 "error": "Request timeout - Payliance API did not respond within 30 seconds",
+                "error_type": ErrorType.TRANSIENT.value,
                 "transaction_id": transaction_id,
                 "request_id": request_id,
                 "processing_time_ms": processing_time
@@ -427,45 +621,77 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
 
     except httpx.HTTPStatusError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        error_type = classify_error(e, getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None)
         logger.error(f"❌ [{request_id}] HTTP ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] Error classified as: {error_type.value}")
+
+        status_code = getattr(e.response, 'status_code', 500) if hasattr(e, 'response') else 500
         return func.HttpResponse(
             json.dumps({
                 "success": False,
                 "error": f"HTTP error from Payliance API: {str(e)}",
+                "error_type": error_type.value,
                 "transaction_id": transaction_id,
                 "request_id": request_id,
                 "processing_time_ms": processing_time
             }),
-            status_code=500,
+            status_code=status_code,
+            mimetype="application/json"
+        )
+
+    except (httpx.ConnectError, httpx.NetworkError, httpx.ConnectTimeout) as e:
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        logger.error(f"❌ [{request_id}] NETWORK ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] Error classified as: {ErrorType.TRANSIENT.value}")
+        return func.HttpResponse(
+            json.dumps({
+                "success": False,
+                "error": f"Network error connecting to Payliance API: {str(e)}",
+                "error_type": ErrorType.TRANSIENT.value,
+                "transaction_id": transaction_id,
+                "request_id": request_id,
+                "processing_time_ms": processing_time
+            }),
+            status_code=503,
             mimetype="application/json"
         )
 
     except httpx.RequestError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        error_type = classify_error(e)
         logger.error(f"❌ [{request_id}] REQUEST ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] Error classified as: {error_type.value}")
+
+        status_code = 500 if error_type == ErrorType.TRANSIENT else 400
         return func.HttpResponse(
             json.dumps({
                 "success": False,
                 "error": f"Failed to call Payliance API: {str(e)}",
+                "error_type": error_type.value,
                 "transaction_id": transaction_id,
                 "request_id": request_id,
                 "processing_time_ms": processing_time
             }),
-            status_code=500,
+            status_code=status_code,
             mimetype="application/json"
         )
 
     except Exception as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        error_type = classify_error(e)
         logger.error(f"❌ [{request_id}] UNEXPECTED ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] Error classified as: {error_type.value}")
+
+        status_code = 500 if error_type == ErrorType.TRANSIENT else 400
         return func.HttpResponse(
             json.dumps({
                 "success": False,
                 "error": f"Unexpected error: {str(e)}",
+                "error_type": error_type.value,
                 "transaction_id": transaction_id,
                 "request_id": request_id,
                 "processing_time_ms": processing_time
             }),
-            status_code=500,
+            status_code=status_code,
             mimetype="application/json"
         )

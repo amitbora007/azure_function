@@ -67,8 +67,6 @@ class ServiceBusLocalTester:
 
         message_data = {
             "transaction_id": transaction_id,
-            "amount": 2.50,
-            "currency": "USD",
             "timestamp": datetime.now().isoformat(),
             "test": True
         }

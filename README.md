@@ -182,3 +182,12 @@ curl -X POST "http://localhost:7071/api/debit" \
 ### Debug Logging
 
 Enable verbose logging by setting log level in `host.json` or through environment variables.
+
+### Updating Service bus settings
+az servicebus queue update --name transactions --namespace-name transactions-payliance --resource-group payliance-rg --max-delivery-count 5 --lock-duration PT5M
+
+### Testing service bus with Azure Function
+./setup_local_testing.sh
+python3 test_servicebus_local.py --send-message --transaction-id "10525134968999953610"
+./cleanup_local_testing.sh
+
