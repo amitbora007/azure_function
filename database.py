@@ -164,9 +164,7 @@ class MSSQLDatabase:
 
     async def insert_transaction_event(self,
         transaction_id: str,
-        settled_stamp: str,
         settled_log_id: str,
-        created_on: str,
         created_by: int,
         payliance_auth_id: str
     ) -> bool:
@@ -177,8 +175,8 @@ class MSSQLDatabase:
 
         query = """
         INSERT INTO bim_transaction_events
-        (transaction_id, settled_stamp, settled_log_id, created_on, created_by, payliance_auth_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (transaction_id, settled_stamp, settled_log_id, created_by, payliance_auth_id, created_on)
+        VALUES (?, GETUTCDATE(), ?, ?, ?, GETUTCDATE())
         """
 
         try:
@@ -186,9 +184,7 @@ class MSSQLDatabase:
                 async with conn.cursor() as cursor:
                     await cursor.execute(query, (
                         transaction_id,
-                        settled_stamp,
                         settled_log_id,
-                        created_on,
                         created_by,
                         payliance_auth_id
                     ))

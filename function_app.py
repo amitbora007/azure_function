@@ -531,9 +531,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                     # Update the payliance auth code in database
                     update_success = await db.insert_transaction_event(
                         transaction_id=transaction_id,
-                        settled_stamp= datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         settled_log_id=datetime.now().strftime('%y%m%d%H'),
-                        created_on=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         created_by=9998,
                         payliance_auth_id=authorization_id
                     )
