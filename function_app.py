@@ -152,13 +152,13 @@ async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
 
         if result['success']:
-            logger.info(f"✅ [{message_id}] Service Bus message processed successfully for transaction {transaction_id} in {processing_time:.2f}ms")
+            logger.info(f"[{message_id}] Service Bus message processed successfully for transaction {transaction_id} in {processing_time:.2f}ms")
         else:
             # Check error type from the result
             error_type = result.get('error_type', ErrorType.TRANSIENT)
             error_message = result.get('error_message', 'Unknown error')
 
-            logger.error(f"❌ [{message_id}] Failed to process Service Bus message for transaction {transaction_id} in {processing_time:.2f}ms")
+            logger.error(f"[{message_id}] Failed to process Service Bus message for transaction {transaction_id} in {processing_time:.2f}ms")
             logger.error(f"[{message_id}] Error type: {error_type.value}, Message: {error_message}")
 
             if error_type == ErrorType.PERMANENT:
@@ -170,7 +170,7 @@ async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
 
     except DebitError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.error(f"❌ [{message_id}] Debit error processing Service Bus message: {str(e)}")
+        logger.error(f"[{message_id}] Debit error processing Service Bus message: {str(e)}")
         logger.error(f"[{message_id}] Processing time: {processing_time:.2f}ms")
         logger.error(f"[{message_id}] Error type: {e.error_type.value}")
 
@@ -192,7 +192,7 @@ async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
 
     except Exception as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.error(f"❌ [{message_id}] Unexpected error processing Service Bus message: {str(e)}")
+        logger.error(f"[{message_id}] Unexpected error processing Service Bus message: {str(e)}")
         logger.error(f"[{message_id}] Processing time: {processing_time:.2f}ms")
 
         # Log message properties for debugging
@@ -257,7 +257,7 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
             response = await client.post(debit_url, headers=headers, json=payload)
 
         if response.status_code == 200:
-            logger.info(f"✅ [{correlation_id}] Debit endpoint call successful for transaction {transaction_id}")
+            logger.info(f"[{correlation_id}] Debit endpoint call successful for transaction {transaction_id}")
             try:
                 response_data = response.json()
                 if response_data.get('success'):
@@ -277,7 +277,7 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
                 return {"success": True}  # Assume success if we got 200 but couldn't parse
         else:
             error_msg = f"Debit endpoint call failed with status {response.status_code}: {response.text}"
-            logger.error(f"❌ [{correlation_id}] {error_msg}")
+            logger.error(f"[{correlation_id}] {error_msg}")
             error_type = classify_error(Exception(error_msg), response.status_code)
             return {
                 "success": False,
@@ -287,7 +287,7 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
 
     except (httpx.TimeoutException, asyncio.TimeoutError) as e:
         error_msg = f"Timeout calling debit endpoint for transaction {transaction_id}: {str(e)}"
-        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] {error_msg}")
         return {
             "success": False,
             "error_type": ErrorType.TRANSIENT,
@@ -295,7 +295,7 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
         }
     except (httpx.ConnectError, httpx.NetworkError, httpx.ConnectTimeout) as e:
         error_msg = f"Network error calling debit endpoint for transaction {transaction_id}: {str(e)}"
-        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] {error_msg}")
         return {
             "success": False,
             "error_type": ErrorType.TRANSIENT,
@@ -303,7 +303,7 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
         }
     except httpx.RequestError as e:
         error_msg = f"Request error calling debit endpoint for transaction {transaction_id}: {str(e)}"
-        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] {error_msg}")
         error_type = classify_error(e)
         return {
             "success": False,
@@ -312,7 +312,7 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
         }
     except Exception as e:
         error_msg = f"Unexpected error calling debit endpoint for transaction {transaction_id}: {str(e)}"
-        logger.error(f"❌ [{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] {error_msg}")
         error_type = classify_error(e)
         return {
             "success": False,
@@ -516,7 +516,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
 
         # Process response
         if response.status_code == 200:
-            logger.info(f"✅ [{request_id}] SUCCESS: Transaction {transaction_id} processed in {processing_time:.2f}ms")
+            logger.info(f"[{request_id}] SUCCESS: Transaction {transaction_id} processed in {processing_time:.2f}ms")
 
             # Extract AuthorizationId from response and update database
             try:
@@ -567,7 +567,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
             error_type = classify_error(Exception(f"HTTP {response.status_code}"), response.status_code)
             error_msg = f"API ERROR: Transaction {transaction_id} failed with status {response.status_code}"
 
-            logger.warning(f"⚠️ [{request_id}] {error_msg}")
+            logger.warning(f"[{request_id}] {error_msg}")
             logger.warning(f"[{request_id}] Error classified as: {error_type.value}")
             logger.warning(f"[{request_id}] Response: {response.text}")
 
@@ -579,7 +579,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
 
     except DebitError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.error(f"❌ [{request_id}] DEBIT ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] DEBIT ERROR for transaction {transaction_id}: {str(e)}")
         logger.error(f"[{request_id}] Error type: {e.error_type.value}")
 
         # Return appropriate status code based on error type
@@ -603,7 +603,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
 
     except (httpx.TimeoutException, asyncio.TimeoutError) as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.error(f"❌ [{request_id}] TIMEOUT ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] TIMEOUT ERROR for transaction {transaction_id}: {str(e)}")
         logger.error(f"[{request_id}] Error classified as: {ErrorType.TRANSIENT.value}")
         return func.HttpResponse(
             json.dumps({
@@ -621,7 +621,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
     except httpx.HTTPStatusError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         error_type = classify_error(e, getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None)
-        logger.error(f"❌ [{request_id}] HTTP ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] HTTP ERROR for transaction {transaction_id}: {str(e)}")
         logger.error(f"[{request_id}] Error classified as: {error_type.value}")
 
         status_code = getattr(e.response, 'status_code', 500) if hasattr(e, 'response') else 500
@@ -640,7 +640,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
 
     except (httpx.ConnectError, httpx.NetworkError, httpx.ConnectTimeout) as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.error(f"❌ [{request_id}] NETWORK ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] NETWORK ERROR for transaction {transaction_id}: {str(e)}")
         logger.error(f"[{request_id}] Error classified as: {ErrorType.TRANSIENT.value}")
         return func.HttpResponse(
             json.dumps({
@@ -658,7 +658,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
     except httpx.RequestError as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         error_type = classify_error(e)
-        logger.error(f"❌ [{request_id}] REQUEST ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"{request_id}] REQUEST ERROR for transaction {transaction_id}: {str(e)}")
         logger.error(f"[{request_id}] Error classified as: {error_type.value}")
 
         status_code = 500 if error_type == ErrorType.TRANSIENT else 400
@@ -678,7 +678,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         error_type = classify_error(e)
-        logger.error(f"❌ [{request_id}] UNEXPECTED ERROR for transaction {transaction_id}: {str(e)}")
+        logger.error(f"[{request_id}] UNEXPECTED ERROR for transaction {transaction_id}: {str(e)}")
         logger.error(f"[{request_id}] Error classified as: {error_type.value}")
 
         status_code = 500 if error_type == ErrorType.TRANSIENT else 400
