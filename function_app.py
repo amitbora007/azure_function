@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Service Bus connection string should be configured in Azure settings
 SERVICE_BUS_CONNECTION = "ServiceBusConnection"
+SERVICE_BUS_QUEUE = os.environ.get("SERVICE_BUS_QUEUE")
 
 def classify_error(exception: Exception, status_code: int = None) -> ErrorType:
     """
@@ -103,7 +104,7 @@ async def health_check(req: func.HttpRequest) -> func.HttpResponse:
 @app.function_name(name="ServiceBusDebitProcessor")
 @app.service_bus_queue_trigger(
     arg_name="msg",
-    queue_name="transactions",
+    queue_name=SERVICE_BUS_QUEUE,
     connection=SERVICE_BUS_CONNECTION
 )
 async def service_bus_debit_processor(msg: func.ServiceBusMessage) -> None:
