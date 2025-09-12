@@ -72,8 +72,12 @@ def classify_error(exception: Exception, status_code: int = None) -> ErrorType:
         if status_code == 429:
             return ErrorType.TRANSIENT
 
+        # Not Found (404) - transient
+        if status_code == 404:
+            return ErrorType.TRANSIENT
+
         # Client errors that indicate permanent issues
-        permanent_status_codes = {400, 401, 403, 404, 405, 409, 422}
+        permanent_status_codes = {400, 401, 403, 405, 409, 422}
         if status_code in permanent_status_codes:
             return ErrorType.PERMANENT
 
@@ -246,15 +250,19 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
         if function_key:
             headers['x-functions-key'] = function_key
 
-        # Construct the URL
+        # Construct the URL - FIXED: Changed from debit1 to debit
         debit_url = f"{function_app_url}/api/debit"
 
         logger.info(f"[{correlation_id}] Calling debit endpoint: {debit_url}")
+        logger.info(f"[{correlation_id}] Request payload: {payload}")
+        logger.info(f"[{correlation_id}] Request headers: {headers}")
 
         # Make the HTTP call with timeout and retry logic
         timeout = httpx.Timeout(timeout=60.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=True) as client:  # CHANGED: verify=True to catch SSL errors
+            logger.info(f"[{correlation_id}] Making POST request to {debit_url}")
             response = await client.post(debit_url, headers=headers, json=payload)
+            logger.info(f"[{correlation_id}] Received response with status code: {response.status_code}")
 
         if response.status_code == 200:
             logger.info(f"[{correlation_id}] Debit endpoint call successful for transaction {transaction_id}")
@@ -296,6 +304,8 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
     except (httpx.ConnectError, httpx.NetworkError, httpx.ConnectTimeout) as e:
         error_msg = f"Network error calling debit endpoint for transaction {transaction_id}: {str(e)}"
         logger.error(f"[{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] URL attempted: {debit_url}")
+        logger.error(f"[{correlation_id}] Exception type: {type(e).__name__}")
         return {
             "success": False,
             "error_type": ErrorType.TRANSIENT,
@@ -304,6 +314,9 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
     except httpx.RequestError as e:
         error_msg = f"Request error calling debit endpoint for transaction {transaction_id}: {str(e)}"
         logger.error(f"[{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] URL attempted: {debit_url}")
+        logger.error(f"[{correlation_id}] Exception type: {type(e).__name__}")
+        logger.error(f"[{correlation_id}] Exception details: {repr(e)}")
         error_type = classify_error(e)
         return {
             "success": False,
@@ -313,6 +326,9 @@ async def call_debit_endpoint_with_error_handling(transaction_id: str, correlati
     except Exception as e:
         error_msg = f"Unexpected error calling debit endpoint for transaction {transaction_id}: {str(e)}"
         logger.error(f"[{correlation_id}] {error_msg}")
+        logger.error(f"[{correlation_id}] URL attempted: {debit_url}")
+        logger.error(f"[{correlation_id}] Exception type: {type(e).__name__}")
+        logger.error(f"[{correlation_id}] Exception details: {repr(e)}")
         error_type = classify_error(e)
         return {
             "success": False,
@@ -427,6 +443,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
             try:
                 logger.info(f"[{request_id}] Fetching transaction details from database for ID: {transaction_id}")
                 transaction_data = await db.get_transaction_by_id(transaction_id)
+
                 if transaction_data.get('transaction_id'):
                     logger.warning(f"[{request_id}] Transaction already sent to Payliance")
                     return func.HttpResponse(
@@ -435,7 +452,7 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                             "error": "Transaction already sent to Payliance",
                             "request_id": request_id
                         }),
-                        status_code=200,
+                        status_code=409,
                         mimetype="application/json"
                     )
                 elif not transaction_data.get('transaction_id'):
@@ -525,30 +542,29 @@ async def payliance_debit_function(req: func.HttpRequest) -> func.HttpResponse:
                 validation_code = response_data.get('ValidationCode')
                 validation_message = response_data.get('message')
 
-                if validation_code != 1:
+                if authorization_id and db.connection_pool:
                     logger.warning(f"[{request_id}] Received ValidationCode ({validation_code}) with message {validation_message} ")
-                elif authorization_id and db.connection_pool:
+
                     # Update the payliance auth code in database
-                    update_success = await db.insert_transaction_event(
+                    insert_success = await db.insert_transaction_event(
                         transaction_id=transaction_id,
                         settled_log_id=datetime.now().strftime('%y%m%d%H'),
                         created_by=9998,
                         payliance_auth_id=authorization_id
                     )
 
-                    if update_success:
-                        logger.info(f"[{request_id}] Database updated with AuthorizationId: {authorization_id}")
-                    else:
-                        logger.warning(f"[{request_id}] Failed to update database with AuthorizationId: {authorization_id}")
+                    if insert_success:
+                        logger.info(f"[{request_id}] Record inserted with AuthorizationId: {authorization_id} in events")
+
                 elif not authorization_id:
                     logger.warning(f"[{request_id}] No AuthorizationId found in response")
                 elif not db.connection_pool:
-                    logger.warning(f"[{request_id}] Database connection not available for AuthorizationId update")
+                    logger.warning(f"[{request_id}] Database connection not available to insert record")
 
             except json.JSONDecodeError:
                 logger.warning(f"[{request_id}] Response is not valid JSON, cannot extract AuthorizationId")
             except Exception as e:
-                logger.error(f"[{request_id}] Error updating AuthorizationId in database: {str(e)}")
+                logger.error(f"[{request_id}] Error inserting record in database: {str(e)}")
 
             return func.HttpResponse(
                 json.dumps({

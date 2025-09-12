@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 class ServiceBusLocalTester:
     def __init__(self):
         self.connection_string = os.environ.get('ServiceBusConnection')
-        self.queue_name = "transactions"  # Default queue name
+        self.queue_name = os.environ.get('SERVICE_BUS_QUEUE')
         self.function_url = os.environ.get('FUNCTION_APP_URL', 'http://localhost:7071')
 
         if not self.connection_string or 'your-servicebus-namespace' in self.connection_string:
@@ -63,13 +63,18 @@ class ServiceBusLocalTester:
     def send_test_message(self, transaction_id: Optional[str] = None) -> bool:
         """Send a test message to the Service Bus queue"""
         if not transaction_id:
-            transaction_id = "10524550906999953606"
 
-        message_data = {
-            "transaction_id": transaction_id,
-            "timestamp": datetime.now().isoformat(),
-            "test": True
-        }
+            message_data = {
+                "transaction_id": "1234567",
+                "timestamp": datetime.now().isoformat(),
+                "test": True
+            }
+        else:
+            message_data = {
+                "transaction_id": transaction_id,
+                "timestamp": datetime.now().isoformat(),
+                "test": True
+            }
 
         try:
             with ServiceBusClient.from_connection_string(self.connection_string) as client:
